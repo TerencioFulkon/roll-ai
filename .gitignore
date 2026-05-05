@@ -1,0 +1,31 @@
+.env
+.env.local
+**/.env
+**/.env.local
+
+# Dependencies
+node_modules/
+
+# Build / cache
+dist/
+**/dist/
+frontend/dist/
+
+# Local env overrides (secrets)
+.vite/
+.turbo/
+.cache/
+
+# Upload scratch (never version)
+tmp-uploads/
+**/tmp-uploads/
+
+# Ad-hoc test media
+backend/tmp/
+
+# OS / editor
+.DS_Store
+*.log
+.claude/settings.local.json
+
+# Optional: keep team-shared defaults only; never embed API keys in tracked JSON (use env / local file).

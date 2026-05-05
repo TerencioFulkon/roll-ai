@@ -1,0 +1,82 @@
+/**
+ * RollAI — Nova / Neutral / Emerald reference palette (exact hex).
+ * Light: bg #fff · card #fff · border #e5e7eb · text #111827 / body #4b5563 · accent #059669 · primary btn white on emerald.
+ * Dark: bg #121212 · surface #18181b · border #27272a · text #fff / muted #a1a1aa · accent #10b981.
+ */
+
+/* Light mode (dashboard reference) */
+:root {
+  --rollai-page-bg: #ffffff;
+  --rollai-card-surface: #ffffff;
+  --rollai-input-surface: #ffffff;
+  --rollai-border-ui: #e5e7eb;
+  --rollai-text-primary: #111827;
+  --rollai-text-secondary: #4b5563;
+  --rollai-accent: #059669;
+  --rollai-accent-foreground: #ffffff;
+  --rollai-bg: var(--rollai-page-bg);
+  --rollai-surface: var(--rollai-card-surface);
+  --rollai-surface-elevated: #f9fafb;
+  --rollai-border: var(--rollai-border-ui);
+  --rollai-text: var(--rollai-text-primary);
+  --rollai-muted: var(--rollai-text-secondary);
+
+  --background: var(--rollai-page-bg);
+  --foreground: var(--rollai-text-primary);
+  --card: var(--rollai-card-surface);
+  --card-foreground: var(--rollai-text-primary);
+  --popover: var(--rollai-card-surface);
+  --popover-foreground: var(--rollai-text-primary);
+  --primary: #059669;
+  --primary-foreground: #ffffff;
+  --secondary: var(--rollai-surface-elevated);
+  --secondary-foreground: var(--rollai-text-primary);
+  --muted: #f4f4f5;
+  --muted-foreground: var(--rollai-text-secondary);
+  --accent: #f9fafb;
+  --accent-foreground: var(--rollai-text-primary);
+  --destructive: oklch(0.577 0.245 27.325);
+  --border: var(--rollai-border-ui);
+  --input: var(--rollai-border-ui);
+  --ring: #059669;
+
+  color-scheme: light;
+}
+
+.dark {
+  --rollai-page-bg: #121212;
+  --rollai-card-surface: #18181b;
+  --rollai-input-surface: #1c1c1c;
+  --rollai-border-ui: #27272a;
+  --rollai-text-primary: #ffffff;
+  --rollai-text-secondary: #a1a1aa;
+  --rollai-accent: #10b981;
+  --rollai-accent-foreground: #09090b;
+  --rollai-bg: var(--rollai-page-bg);
+  --rollai-surface: var(--rollai-card-surface);
+  --rollai-surface-elevated: #1e1e1e;
+  --rollai-border: var(--rollai-border-ui);
+  --rollai-text: var(--rollai-text-primary);
+  --rollai-muted: var(--rollai-text-secondary);
+
+  --background: var(--rollai-page-bg);
+  --foreground: var(--rollai-text-primary);
+  --card: var(--rollai-card-surface);
+  --card-foreground: var(--rollai-text-primary);
+  --popover: var(--rollai-card-surface);
+  --popover-foreground: var(--rollai-text-primary);
+  --primary: #10b981;
+  --primary-foreground: #09090b;
+  --secondary: var(--rollai-surface-elevated);
+  --secondary-foreground: var(--rollai-text-primary);
+  --muted: color-mix(in oklab, #ffffff 6%, #121212);
+  --muted-foreground: var(--rollai-text-secondary);
+  --accent: var(--rollai-surface-elevated);
+  --accent-foreground: var(--rollai-text-primary);
+  --destructive: oklch(0.577 0.245 27.325);
+  --border: var(--rollai-border-ui);
+  --input: var(--rollai-border-ui);
+  --ring: #10b981;
+
+  color-scheme: dark;
+}

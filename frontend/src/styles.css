@@ -1,0 +1,220 @@
+/**
+ * RollAI upload — voice `<select>` + label utilities.
+ */
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+}
+
+.rollai-label {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--rollai-text-primary);
+}
+
+.rollai-label-optional {
+  font-weight: 400;
+  color: var(--rollai-text-secondary);
+  font-size: 0.867em;
+}
+
+.rollai-upload-form {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+.rollai-voice-select {
+  width: 100%;
+  min-height: 48px;
+  padding: 0.75rem 1rem;
+  font-size: 14px;
+  font-family: inherit;
+  color: var(--rollai-text-primary);
+  background-color: var(--rollai-input-surface);
+  border: 1px solid var(--rollai-border-ui);
+  cursor: pointer;
+  appearance: auto;
+  transition:
+    box-shadow 300ms ease,
+    border-color 200ms ease,
+    transform 200ms ease;
+}
+
+.rollai-voice-select:hover:not(:disabled) {
+  box-shadow:
+    0 1px 3px 0 rgb(0 0 0 / 0.06),
+    0 1px 2px -1px rgb(0 0 0 / 0.06);
+}
+
+.rollai-voice-select:disabled {
+  opacity: 0.85;
+  cursor: not-allowed;
+}
+
+.rollai-voice-select:focus {
+  outline: none;
+  border-color: var(--border);
+  box-shadow:
+    0 1px 3px 0 rgb(0 0 0 / 0.06),
+    0 1px 2px -1px rgb(0 0 0 / 0.06),
+    0 0 0 1px color-mix(in oklab, var(--primary) 25%, transparent);
+}
+
+.rollai-voice-select optgroup {
+  color: var(--rollai-text-secondary);
+  font-weight: 600;
+  background-color: var(--rollai-card-surface);
+}
+
+.rollai-voice-select option {
+  color: var(--rollai-text-primary);
+  background-color: var(--rollai-input-surface);
+}
+
+/* ── "AI thinking" motion used while a roll is being analysed ──────────────── */
+
+@keyframes rollai-breathe {
+  0%,
+  100% {
+    transform: scaleX(1);
+    opacity: 0.85;
+  }
+  50% {
+    transform: scaleX(0.7);
+    opacity: 1;
+  }
+}
+
+.rollai-breathe {
+  transform-origin: left center;
+  animation: rollai-breathe 2.8s ease-in-out infinite;
+}
+
+.rollai-breathe-slow {
+  animation-duration: 3.8s;
+}
+
+.rollai-breathe-fast {
+  animation-duration: 2.1s;
+  animation-direction: alternate;
+}
+
+@keyframes rollai-tint {
+  0%,
+  100% {
+    background-color: var(--muted);
+  }
+  50% {
+    background-color: color-mix(in oklab, var(--primary) 60%, transparent);
+  }
+}
+
+.rollai-tint {
+  animation: rollai-tint 3.2s ease-in-out infinite;
+}
+
+@keyframes rollai-badge-pulse {
+  0%,
+  100% {
+    transform: scale(1);
+    box-shadow: 0 0 0 0 color-mix(in oklab, var(--primary) 40%, transparent);
+  }
+  50% {
+    transform: scale(1.05);
+    box-shadow: 0 0 0 6px color-mix(in oklab, var(--primary) 0%, transparent);
+  }
+}
+
+.rollai-badge-pulse {
+  animation: rollai-badge-pulse 2.4s ease-in-out infinite;
+}
+
+@keyframes rollai-shimmer-text {
+  0% {
+    background-position: 260% 0;
+  }
+  100% {
+    background-position: -260% 0;
+  }
+}
+
+@keyframes rollai-shimmer-message-burst {
+  0% {
+    opacity: 0.48;
+    filter: brightness(1.75) saturate(1.38);
+    transform: translateY(2px);
+  }
+  40% {
+    opacity: 1;
+    filter: brightness(1.25) saturate(1.14);
+    transform: translateY(0);
+  }
+  100% {
+    opacity: 1;
+    filter: brightness(1) saturate(1);
+    transform: translateY(0);
+  }
+}
+
+.rollai-shimmer-text {
+  background: linear-gradient(
+    90deg,
+    color-mix(in oklab, var(--muted-foreground) 94%, transparent) 0%,
+    color-mix(in oklab, var(--muted-foreground) 45%, transparent) 18%,
+    var(--foreground) 43%,
+    color-mix(in oklab, var(--primary), var(--foreground) 92%) 50%,
+    var(--foreground) 57%,
+    color-mix(in oklab, var(--muted-foreground) 45%, transparent) 82%,
+    color-mix(in oklab, var(--muted-foreground) 94%, transparent) 100%
+  );
+  background-size: 320% 100%;
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+  animation: rollai-shimmer-text 4.65s linear infinite;
+}
+
+.rollai-shimmer-text.rollai-shimmer-text--burst {
+  animation:
+    rollai-shimmer-message-burst 1.35s cubic-bezier(0.25, 0.82, 0.35, 1) 1,
+    rollai-shimmer-text 4.65s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rollai-breathe,
+  .rollai-breathe-slow,
+  .rollai-breathe-fast,
+  .rollai-tint,
+  .rollai-badge-pulse,
+  .rollai-shimmer-text,
+  .rollai-shimmer-text.rollai-shimmer-text--burst {
+    animation: none;
+  }
+
+  .rollai-shimmer-text {
+    color: var(--foreground);
+    background: none;
+  }
+}
+
+/**
+ * Scroll content clears the fixed header — single source on `<main>` so every tab aligns.
+ * Header: inline `padding-top: max(0.75rem, env(safe-area-inset-top))` + row `min-h-[2.75rem]` + `pb-4`.
+ * `--sub-banner` matches the cross-tab banner `top` (safe + 4.5rem) plus chip height + gutter.
+ */
+.rollai-main-under-fixed-header {
+  padding-top: calc(max(0.75rem, env(safe-area-inset-top, 0px)) + 2.75rem + 1rem + 0.5rem);
+  scroll-padding-top: calc(max(0.75rem, env(safe-area-inset-top, 0px)) + 2.75rem + 1rem + 0.5rem);
+}
+
+.rollai-main-under-fixed-header.rollai-main-under-fixed-header--sub-banner {
+  padding-top: calc(max(0.75rem, env(safe-area-inset-top, 0px)) + 4.5rem + 2.75rem + 0.75rem);
+  scroll-padding-top: calc(max(0.75rem, env(safe-area-inset-top, 0px)) + 4.5rem + 2.75rem + 0.75rem);
+}
+

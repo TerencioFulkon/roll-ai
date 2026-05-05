@@ -1,0 +1,13 @@
+{
+  "name": "video-analyser-v2",
+  "private": true,
+  "description": "Root scripts delegate to backend/ and frontend/",
+  "scripts": {
+    "dev:backend": "npm run dev --prefix backend",
+    "dev:frontend": "npm run dev --prefix frontend",
+    "worker": "npm run worker --prefix backend",
+    "worker:dev": "npm run worker:dev --prefix backend",
+    "start:backend": "npm start --prefix backend",
+    "db:migrate:three-roll": "npm run migrate:three-roll --prefix backend"
+  }
+}

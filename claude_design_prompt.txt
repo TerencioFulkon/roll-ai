@@ -1,0 +1,90 @@
+I'm designing the unauthenticated user flow for RollAI — a mobile-first web app that analyses BJJ (Brazilian Jiu-Jitsu) training footage and produces a voiced coaching commentary video. The product is aimed at serious BJJ practitioners. The tone is calm, focused, and technical. Think athletic performance tool, not social app.
+
+I want to visually explore four screens before writing any code. Please design them as high-fidelity mobile mockups at 390px wide.
+
+---
+
+DESIGN SYSTEM — use these exact values, do not invent alternatives.
+
+Colours (dark theme):
+- Background: #1F1F1E
+- Surface: #2A2A28
+- Surface elevated: #333331 (lighter bg only — no shadows)
+- Border: #3A3A38
+- Accent: #E8FF47
+- Accent hover: #D4EB3A
+- Text primary: #F5F5F0
+- Text secondary: #909088
+- Success: #4ADE80
+- Error: #F87171
+
+Typography — Inter:
+- Heading: 28px / 700
+- Subheading: 18px / 600
+- Body: 15px / 400
+- Caption: 12px / 400
+- Line height: 1.5
+
+Spacing scale: 4, 8, 12, 16, 24, 32px
+Border radius: 8px small · 14px default · 24px pill
+Layout: 16px horizontal padding · 16px card internal padding
+
+Rules:
+- No gradients. No shadows. Flat surfaces only.
+- Surface elevated = lighter background colour only.
+- One primary CTA per screen uses accent (#E8FF47) background.
+- Accent must not exceed 15% of visible UI.
+- Secondary actions use outline or ghost styles.
+- All interactive elements need focus state: 2px accent outline.
+
+---
+
+SCREENS TO DESIGN
+
+1. Landing / Upload
+   - App name "RollAI" as header
+   - One-line hero: "AI coaching commentary on your BJJ rolls."
+   - Form fields in this order:
+     a. "What are you wearing?" — text input with placeholder "e.g. blue gi, white rashguard"
+     b. "Your photo" (optional) — file input, caption says "Helps the AI identify you"
+     c. "Select video" — file input
+     d. Trust row beneath video input: "Max 10 min · MP4, MOV, WEBM, MKV" in caption/secondary
+     e. Voice selector — shows "Jordan · Male" with a play-preview icon, chevron to open
+   - Primary CTA: "Analyse Roll" — accent background, pill radius, full width
+   - Show disabled state (50% opacity) as a variant
+
+2. Voice selector — bottom sheet
+   - Full-width sheet sliding up from bottom
+   - Handle bar at top
+   - Title: "Select voice"
+   - Voices grouped: Male Voices / Female Voices
+   - Each row: avatar placeholder circle, voice name, gender tag, play icon button
+   - Selected voice shows accent checkmark
+   - Voices: Jordan (selected), George, Daniel, Brian (Male) · Alice, Matilda, Sarah (Female)
+
+3. Processing
+   - Same card surface as upload — visual continuity
+   - Four-step progress indicator:
+     Step 1: Uploading (complete)
+     Step 2: Analysing footage (active — accent dot, pulsing)
+     Step 3: Generating coach voice (pending)
+     Step 4: Building video (pending)
+   - Active step label in text primary, completed in text secondary, pending in text secondary at 50% opacity
+   - Subline: "This usually takes 1–3 minutes"
+   - Subtle spinner in accent colour
+
+4. Analysis Output + Signup Prompt
+   - Full-width video player (dark placeholder with play icon)
+   - Below player: "Download video" — secondary button (outline, accent border + text)
+   - "Analyse another roll" — ghost button
+   - Signup prompt as a card below (surface elevated background, 14px radius):
+     - Headline: "Save and revisit your analysis"
+     - Subline: "Sign up free to keep your coached videos and track your progress."
+     - "Create free account" — accent CTA, pill, full width
+     - "Maybe later" — ghost, centred beneath
+
+---
+
+Please show all four screens. For each, also show one interaction state variant (e.g. upload button loading state, voice sheet mid-scroll, processing at a different stage, signup prompt dismissed).
+
+Style: dark, premium, athletic. No decorative elements. No illustrations. Typography and spacing do the work.
