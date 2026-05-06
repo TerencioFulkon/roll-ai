@@ -117,19 +117,53 @@ async function mapJobToRoll(row, durationSeconds) {
 router.get("/", async (req, res) => {
   try {
     if (req.user?.id) {
-      const { data, error } = await supabase
+      const rawExtra = req.query.ids ?? req.query.job_ids ?? "";
+      const extraTokens = String(rawExtra)
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .slice(0, 100);
+      const extraIds = extraTokens.filter((id) => uuidValidate(id));
+
+      const { data: userRows, error } = await supabase
         .from("jobs")
         .select("sqlid,completed_at,created_at,output_url,metadata")
         .eq("user_id", req.user.id)
         .eq("status", "complete")
-        .not("output_url", "is", null)
         .order("completed_at", { ascending: false });
 
       if (error) {
         throw new Error(error.message);
       }
 
-      const rowsList = data || [];
+      const bySqlid = new Map();
+      for (const row of userRows || []) {
+        bySqlid.set(row.sqlid, row);
+      }
+
+      if (extraIds.length > 0) {
+        const { data: idRows, error: idErr } = await supabase
+          .from("jobs")
+          .select("sqlid,completed_at,created_at,output_url,metadata")
+          .in("sqlid", extraIds)
+          .eq("status", "complete");
+
+        if (idErr) {
+          throw new Error(idErr.message);
+        }
+        for (const row of idRows || []) {
+          if (!bySqlid.has(row.sqlid)) {
+            bySqlid.set(row.sqlid, row);
+          }
+        }
+      }
+
+      const rowsList = Array.from(bySqlid.values()).sort((a, b) => {
+        const ta = Date.parse(String(a.completed_at || a.created_at || 0)) || 0;
+        const tb = Date.parse(String(b.completed_at || b.created_at || 0)) || 0;
+        return tb - ta;
+      });
+
       const durationByJob = await durationSecondsByJobIdMap(rowsList.map((r) => r.sqlid));
 
       const rolls = await Promise.all(
@@ -155,8 +189,7 @@ router.get("/", async (req, res) => {
       .from("jobs")
       .select("sqlid,completed_at,created_at,output_url,metadata")
       .in("sqlid", validIds)
-      .eq("status", "complete")
-      .not("output_url", "is", null);
+      .eq("status", "complete");
 
     if (error) {
       throw new Error(error.message);

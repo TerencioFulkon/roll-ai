@@ -113,6 +113,24 @@ function looksLikeUuid(value) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);
 }
 
+/**
+ * Local hints for which job UUIDs to resolve on the Rolls tab when not signed in:
+ * remembered completes, plus the in-tab analysis id from sessionStorage (same browser session).
+ */
+function collectAnonymousJobIdHints() {
+  const hints = readStoredRollJobIds().filter(looksLikeUuid);
+  try {
+    const raw = sessionStorage.getItem(ACTIVE_ANALYSIS_JOB_ID_KEY);
+    const a = raw && looksLikeUuid(String(raw).trim()) ? String(raw).trim() : "";
+    if (a && !hints.includes(a)) {
+      hints.unshift(a);
+    }
+  } catch {
+    /* private mode */
+  }
+  return [...new Set(hints)];
+}
+
 /** Max orphan lookups per rolls refresh — avoids noisy status polling. */
 const MAX_STORED_JOB_STATUS_LOOKUP = 48;
 
@@ -123,7 +141,7 @@ const MAX_STORED_JOB_STATUS_LOOKUP = 48;
  * @param {Array<{ job_id: string, status: string, created_at: string | null, completed_at: string | null }>} serverList
  */
 async function augmentSessionJobsWithStoredRolls(serverList) {
-  const storedIds = readStoredRollJobIds().filter(looksLikeUuid);
+  const storedIds = collectAnonymousJobIdHints();
   if (storedIds.length === 0) return serverList;
 
   const known = new Set(serverList.map((j) => j.job_id));
@@ -135,6 +153,9 @@ async function augmentSessionJobsWithStoredRolls(serverList) {
       try {
         const data = await getJobStatus(id);
         const st = typeof data.status === "string" ? data.status : "pending";
+        if (st === "complete") {
+          rememberRollJobId(id);
+        }
         const nowIso = new Date().toISOString();
         return {
           job_id: id,
@@ -374,15 +395,6 @@ function App() {
   const loadRollsPageData = useCallback(async () => {
     const sid = getRollaiSessionId();
 
-    if (isAuthenticated && !sid) {
-      setSessionJobsList([]);
-      setCompletedRolls([]);
-      setFailedJobErrors({});
-      setRollsLoadStatus("loaded");
-      setRollsError("");
-      return;
-    }
-
     let serverList =
       /** @type {Array<{ job_id: string, status: string, created_at: string | null, completed_at: string | null }>} */ (
         []
@@ -396,8 +408,10 @@ function App() {
       } catch (err) {
         sessionFetchOk = false;
         console.warn("[rolls] fetchSessionJobs failed:", err);
-        setRollsError(err instanceof Error ? err.message : "Could not load rolls.");
-        setRollsLoadStatus("error");
+        if (isAuthenticated) {
+          setRollsError(err instanceof Error ? err.message : "Could not load rolls.");
+          setRollsLoadStatus("error");
+        }
       }
     }
 
@@ -412,7 +426,7 @@ function App() {
       }
     }
 
-    if (!isAuthenticated && !sid && list.length === 0) {
+    if (!isAuthenticated && !sid && list.length === 0 && collectAnonymousJobIdHints().length === 0) {
       setSessionJobsList([]);
       setCompletedRolls([]);
       setFailedJobErrors({});
@@ -422,49 +436,113 @@ function App() {
     }
 
     try {
-      setSessionJobsList(list);
+      if (isAuthenticated) {
+        /** Include known job UUIDs from this browser so completes still list when `user_id` was not set at upload (token missing) or before session claim. */
+        const storedForMerge = readStoredRollJobIds().filter(looksLikeUuid);
+        const data = await fetchCompletedRolls(storedForMerge);
+        const apiRolls = Array.isArray(data.rolls) ? data.rolls : [];
+        const byJobId = new Map(list.map((j) => [j.job_id, j]));
+        for (const r of apiRolls) {
+          if (!byJobId.has(r.job_id)) {
+            byJobId.set(r.job_id, {
+              job_id: r.job_id,
+              status: "complete",
+              created_at: r.created_at ?? null,
+              completed_at: r.completed_at ?? null
+            });
+          }
+        }
+        const mergedSessionJobs = Array.from(byJobId.values()).sort((a, b) => {
+          const ta = Date.parse(String(a.completed_at || a.created_at || 0)) || 0;
+          const tb = Date.parse(String(b.completed_at || b.created_at || 0)) || 0;
+          return tb - ta;
+        });
+        setSessionJobsList(mergedSessionJobs);
+        setCompletedRolls(finalizeRollListForUiDev(apiRolls));
 
-      const completeIds = list.filter((j) => j.status === "complete").map((j) => j.job_id);
+        const failedJobs = list.filter((j) => j.status === "failed");
+        if (failedJobs.length > 0) {
+          const errs = /** @type {Record<string, string>} */ ({});
+          await Promise.all(
+            failedJobs.map(async (j) => {
+              try {
+                const s = await getJobStatus(j.job_id);
+                errs[j.job_id] = s.error_message || SERVICE_UNAVAILABLE_MESSAGE;
+              } catch {
+                errs[j.job_id] = "Something went wrong";
+              }
+            })
+          );
+          setFailedJobErrors(errs);
+        } else {
+          setFailedJobErrors({});
+        }
 
-      /** @type {typeof completedRolls} */
-      let rollsFull = [];
-
-      if (isAuthenticated && completeIds.length > 0) {
-        const data = await fetchCompletedRolls([]);
-        const byId = new Map(data.rolls.map((r) => [r.job_id, r]));
-        rollsFull = completeIds.map((id) => byId.get(id)).filter(Boolean);
-      } else if (!isAuthenticated && completeIds.length > 0) {
-        const storedIds = readStoredRollJobIds().filter(looksLikeUuid);
-        const idSet = [...new Set([...completeIds, ...storedIds])];
-        const data = await fetchCompletedRolls(idSet);
-        const byId = new Map((Array.isArray(data.rolls) ? data.rolls : []).map((r) => [r.job_id, r]));
-        rollsFull = completeIds.map((id) => byId.get(id)).filter(Boolean);
-      }
-
-      setCompletedRolls(finalizeRollListForUiDev(rollsFull));
-
-      const failedJobs = list.filter((j) => j.status === "failed");
-      if (failedJobs.length > 0) {
-        const errs = /** @type {Record<string, string>} */ ({});
-        await Promise.all(
-          failedJobs.map(async (j) => {
-            try {
-              const s = await getJobStatus(j.job_id);
-              errs[j.job_id] = s.error_message || SERVICE_UNAVAILABLE_MESSAGE;
-            } catch {
-              errs[j.job_id] = "Something went wrong";
-            }
-          })
-        );
-        setFailedJobErrors(errs);
-      } else {
-        setFailedJobErrors({});
-      }
-
-      if (!sessionFetchOk && list.length > 0) {
         setRollsError("");
         setRollsLoadStatus("loaded");
-      } else if (sessionFetchOk) {
+      } else {
+        /**
+         * Anonymous: session jobs can miss completes (session_id mismatch, delay, etc.).
+         * Always union stored job ids from uploads and fetch details; merge into the list for rendering.
+         */
+        const completeIds = list.filter((j) => j.status === "complete").map((j) => j.job_id);
+        const hintIds = collectAnonymousJobIdHints();
+        const idSet = [...new Set([...completeIds, ...hintIds])];
+
+        /** @type {typeof completedRolls} */
+        let rollsFull = [];
+
+        if (idSet.length > 0) {
+          const data = await fetchCompletedRolls(idSet);
+          const apiRolls = Array.isArray(data.rolls) ? data.rolls : [];
+          for (const r of apiRolls) {
+            rememberRollJobId(r.job_id);
+          }
+          const byId = new Map(apiRolls.map((r) => [r.job_id, r]));
+          const orderedIds = idSet;
+          rollsFull = orderedIds.map((id) => byId.get(id)).filter(Boolean);
+
+          const byJobId = new Map(list.map((j) => [j.job_id, j]));
+          for (const r of apiRolls) {
+            if (!byJobId.has(r.job_id)) {
+              byJobId.set(r.job_id, {
+                job_id: r.job_id,
+                status: "complete",
+                created_at: r.created_at ?? null,
+                completed_at: r.completed_at ?? null
+              });
+            }
+          }
+          const mergedSessionJobs = Array.from(byJobId.values()).sort((a, b) => {
+            const ta = Date.parse(String(a.completed_at || a.created_at || 0)) || 0;
+            const tb = Date.parse(String(b.completed_at || b.created_at || 0)) || 0;
+            return tb - ta;
+          });
+          setSessionJobsList(mergedSessionJobs);
+        } else {
+          setSessionJobsList(list);
+        }
+
+        setCompletedRolls(finalizeRollListForUiDev(rollsFull));
+
+        const failedJobs = list.filter((j) => j.status === "failed");
+        if (failedJobs.length > 0) {
+          const errs = /** @type {Record<string, string>} */ ({});
+          await Promise.all(
+            failedJobs.map(async (j) => {
+              try {
+                const s = await getJobStatus(j.job_id);
+                errs[j.job_id] = s.error_message || SERVICE_UNAVAILABLE_MESSAGE;
+              } catch {
+                errs[j.job_id] = "Something went wrong";
+              }
+            })
+          );
+          setFailedJobErrors(errs);
+        } else {
+          setFailedJobErrors({});
+        }
+
         setRollsError("");
         setRollsLoadStatus("loaded");
       }
@@ -477,6 +555,28 @@ function App() {
       }
     }
   }, [isAuthenticated]);
+
+  /** One-time link recovery: open e.g. /?recover_roll=<uuid> to pin a completed job to this browser when local list drifted. */
+  useEffect(() => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const raw = params.get("recover_roll") ?? params.get("job_id");
+      const id = raw && looksLikeUuid(String(raw).trim()) ? String(raw).trim() : "";
+      if (!id) {
+        return undefined;
+      }
+      rememberRollJobId(id);
+      params.delete("recover_roll");
+      params.delete("job_id");
+      const rest = params.toString();
+      const path = `${window.location.pathname}${rest ? `?${rest}` : ""}${window.location.hash || ""}`;
+      window.history.replaceState({}, "", path);
+      void loadRollsPageData();
+    } catch {
+      /* ignore */
+    }
+    return undefined;
+  }, [loadRollsPageData]);
 
   const handleTabChange = (/** @type {"rolls" | "progress" | "gym"} */ nextTab) => {
     if (activeTab === "rolls" && mainRef.current) {

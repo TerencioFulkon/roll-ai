@@ -8,9 +8,17 @@ import ffprobePath from "ffprobe-static";
 import { supabase } from "../supabase.js";
 import { config } from "../config/index.js";
 import { downloadFile, getSignedUrl, uploadFile } from "../providers/r2.js";
-import { analyseFrames, scoreAnalysisQuality } from "../providers/openai.js";
+import {
+  analyseFrames,
+  NARRATION_WORDS_PER_SECOND,
+  scoreAnalysisQuality
+} from "../providers/openai.js";
 import { SERVICE_UNAVAILABLE_MESSAGE } from "../lib/errorMessages.js";
 import { finalizeRollDisplayTitle } from "../lib/rollTitle.js";
+import {
+  getDebugRunsJobDirAbsolute,
+  saveDebugRunFile
+} from "../lib/debugRunsExport.js";
 import {
   createTtsUsageTracker,
   DEFAULT_VOICE_KEY,
@@ -63,12 +71,238 @@ function assertReadableFile(jobId, absPath, role) {
   }
 }
 
-/** Pass 2 estimate: 35 words × 0.4 s/word = 14 s worst-case clip; + 2 s gap between starts. */
-const PASS2_WORDS_MAX = 35;
-const PASS2_SECONDS_PER_WORD = 0.4;
-const PASS2_SAFE_GAP_SECONDS = 2;
+/** Gap between stacked narration clips after real MP3 durations are known (Pass 6 post-TTS). */
 const PASS3_GAP_SECONDS = 2;
-const PASS2_END_BUFFER_SECONDS = 15;
+
+/** Rough USD equivalent for ~£0.31 baseline; warn if total job cost materially exceeds this. */
+const PIPELINE_COST_BASELINE_USD = 0.39;
+
+function countWords(text) {
+  const t = typeof text === "string" ? text.trim() : "";
+  if (!t) return 0;
+  return t.split(/\s+/).filter(Boolean).length;
+}
+
+function stripLastSentence(text) {
+  const trimmed = typeof text === "string" ? text.trim() : "";
+  if (!trimmed) return "";
+  const run = trimmed.replace(/\s+/g, " ");
+  const lastPeriod = run.lastIndexOf(". ");
+  const lastBang = run.lastIndexOf("! ");
+  const lastQ = run.lastIndexOf("? ");
+  const cut = Math.max(lastPeriod, lastBang, lastQ);
+  if (cut < 8) return "";
+  return run.slice(0, cut + 1).trim();
+}
+
+function truncateToWordBudget(text, maxWords) {
+  const words = (typeof text === "string" ? text : "").trim().split(/\s+/).filter(Boolean);
+  if (words.length <= maxWords) return words.join(" ").trim();
+  return words.slice(0, maxWords).join(" ").trim();
+}
+
+function maxWordsForDuration(seconds, wordsPerSec) {
+  const s = Number(seconds);
+  if (!Number.isFinite(s) || s <= 0) return 0;
+  return Math.max(0, Math.floor(s * wordsPerSec * 0.97));
+}
+
+/**
+ * Pass 5 (pre-TTS): fit paragraph script to planned windows — shorten, expand gap, hard truncate, merge/drop.
+ * estimatedDuration = wordCount / 2.3
+ */
+function applyPassFiveNarrationValidation(jobId, videoDurationSeconds, voiceoverSections, wordsPerSec) {
+  /** @type {string[]} */
+  const adjustments = [];
+  const EPS = 0.05;
+
+  const sorted = [...voiceoverSections]
+    .map((s) => ({
+      start: Number(s.start),
+      end: Number(s.end),
+      text: String(s.text || "")
+    }))
+    .sort((a, b) => a.start - b.start)
+    .filter((s) => Number.isFinite(s.start) && Number.isFinite(s.end));
+
+  /** @type {{ start: number, end: number, text: string }[]} */
+  const out = [];
+
+  const estDur = (t) => countWords(t) / wordsPerSec;
+
+  for (let i = 0; i < sorted.length; i += 1) {
+    let { start, end, text } = sorted[i];
+    const nextStart =
+      i + 1 < sorted.length ? sorted[i + 1].start : videoDurationSeconds;
+
+    let avail = end - start;
+    if (avail <= EPS) {
+      adjustments.push(
+        `[job ${jobId}] Pass5: skipped section with invalid window length (start=${start}, end=${end})`
+      );
+      if (text.trim() && out.length > 0) {
+        out[out.length - 1].text = `${out[out.length - 1].text} ${text.trim()}`.trim();
+        out[out.length - 1].end = Math.max(out[out.length - 1].end, end);
+        adjustments.push(`[job ${jobId}] Pass5: merged orphan text into previous section`);
+      }
+      continue;
+    }
+
+    text = text.trim();
+
+    let guard = 0;
+    while (estDur(text) > avail + EPS && text.length > 0 && guard < 150) {
+      guard += 1;
+      const shorter = stripLastSentence(text);
+      if (shorter.length > 0 && shorter.length < text.length) {
+        text = shorter;
+        adjustments.push(`[job ${jobId}] Pass5: section ${i} shortened by sentence trim`);
+        continue;
+      }
+      const mw = maxWordsForDuration(avail, wordsPerSec);
+      text = truncateToWordBudget(text, mw);
+      adjustments.push(
+        `[job ${jobId}] Pass5: section ${i} truncated to ${mw} words (word budget)`
+      );
+      break;
+    }
+
+    if (estDur(text) > avail + EPS) {
+      const neededEnd = start + estDur(text);
+      const maxEnd = Math.min(nextStart - EPS, videoDurationSeconds);
+      const newEnd = Math.min(maxEnd, Math.max(end, Math.min(neededEnd + 0.25, maxEnd)));
+      if (newEnd > end + EPS) {
+        adjustments.push(
+          `[job ${jobId}] Pass5: section ${i} expanded window end ${end.toFixed(2)}s → ${newEnd.toFixed(2)}s`
+        );
+        end = newEnd;
+        avail = end - start;
+      }
+
+      if (estDur(text) > avail + EPS) {
+        const mw = maxWordsForDuration(avail, wordsPerSec);
+        const before = text;
+        text = truncateToWordBudget(text, mw);
+        if (text !== before) {
+          adjustments.push(
+            `[job ${jobId}] Pass5: section ${i} post-expand truncate to ${mw} words`
+          );
+        }
+      }
+    }
+
+    if (countWords(text) < 4) {
+      if (out.length > 0) {
+        out[out.length - 1].text = `${out[out.length - 1].text} ${text}`.trim();
+        out[out.length - 1].end = Math.max(out[out.length - 1].end, end);
+        adjustments.push(`[job ${jobId}] Pass5: merged very short section ${i} into previous`);
+      } else {
+        adjustments.push(`[job ${jobId}] Pass5: dropped sparse section ${i} (no anchor)`);
+      }
+      continue;
+    }
+
+    if (estDur(text) > avail + EPS) {
+      if (out.length > 0) {
+        out[out.length - 1].text = `${out[out.length - 1].text} ${text}`.trim();
+        out[out.length - 1].end = Math.max(out[out.length - 1].end, end);
+        adjustments.push(`[job ${jobId}] Pass5: merged still-overlong section ${i} into previous`);
+      } else {
+        const mw = maxWordsForDuration(avail, wordsPerSec);
+        text = truncateToWordBudget(text, mw);
+        adjustments.push(`[job ${jobId}] Pass5: first section hard-capped to ${mw} words`);
+        out.push({ start, end, text });
+      }
+      continue;
+    }
+
+    out.push({ start, end, text });
+  }
+
+  for (let j = 0; j < Math.min(40, adjustments.length); j += 1) {
+    console.warn(adjustments[j]);
+  }
+  if (adjustments.length > 40) {
+    console.warn(
+      `[job ${jobId}] Pass5: ${adjustments.length} total adjustments (showing first 40 above)`
+    );
+  }
+
+  return { sections: out, adjustments };
+}
+
+/**
+ * Debug JSON in the job temp workspace (same envelope shape as LLM passes in `openai.js`).
+ */
+async function writeJobPipelineDebugFile(tempDir, jobId, videoDurationSeconds, fileName, passName, body) {
+  const envelope = {
+    jobId,
+    videoDurationSeconds,
+    passName,
+    createdAt: new Date().toISOString(),
+    rawModelOutput: body.rawModelOutput ?? null,
+    parsedOutput: body.parsedOutput ?? null,
+    normalisedForNextStep: body.normalisedForNextStep ?? null
+  };
+  await saveDebugRunFile(jobId, fileName, envelope);
+  const filePath = path.join(tempDir, fileName);
+  const json = JSON.stringify(envelope, null, 2);
+  await fs.writeFile(filePath, json, "utf8");
+  console.log(`[job ${jobId}] pipeline debug artifact: ${filePath}`);
+}
+
+/** Names of JSON files written for pipeline debugging; used to decide whether temp dir may be preserved. */
+const PIPELINE_DEBUG_ARTIFACT_FILENAMES = [
+  "pass1-timeline.json",
+  "pass2-coaching-interpretation.json",
+  "pass3-narration-plan.json",
+  "pass4-script.json",
+  "pass5-validated-script.json",
+  "final-audio-segments.json"
+];
+
+async function pipelineDebugArtifactsPresent(workspaceDir) {
+  try {
+    const names = await fs.readdir(workspaceDir);
+    const set = new Set(names);
+    return PIPELINE_DEBUG_ARTIFACT_FILENAMES.some((f) => set.has(f));
+  } catch {
+    return false;
+  }
+}
+
+function augmentCoverageForNarrative(base, narrationPlan, passFiveSections, videoDurationSeconds) {
+  const words = passFiveSections.reduce((sum, x) => sum + countWords(x.text), 0);
+  const n = passFiveSections.length || 1;
+  const avg_words_per_segment = Math.round((words / n) * 10) / 10;
+
+  const nw = narrationPlan?.narration_windows || [];
+  const sorted = [...nw].sort((a, b) => Number(a.start) - Number(b.start));
+  let maxPlannedBetween = 0;
+  for (let j = 1; j < sorted.length; j += 1) {
+    maxPlannedBetween = Math.max(
+      maxPlannedBetween,
+      Number(sorted[j].start) - Number(sorted[j - 1].end)
+    );
+  }
+  const opening = sorted.length ? Math.max(0, sorted[0].start) : 0;
+  const closing = sorted.length
+    ? Math.max(0, videoDurationSeconds - sorted[sorted.length - 1].end)
+    : videoDurationSeconds;
+  const plannedMaxGap = Math.max(maxPlannedBetween, opening, closing, 0);
+
+  const unplanned_silence_penalty = Math.max(
+    0,
+    Math.round(Math.min(100, Math.max(0, base.max_silent_gap - plannedMaxGap - 12) * 1.8))
+  );
+
+  return {
+    ...base,
+    avg_words_per_segment,
+    planned_max_inter_window_gap_seconds: Math.round(plannedMaxGap),
+    unplanned_silence_penalty
+  };
+}
 
 export async function processVideo(job) {
   const jobId = job.sqlid;
@@ -125,35 +359,74 @@ export async function processVideo(job) {
       job.metadata?.participant_description || job.metadata?.participant_descriptor || "";
 
     const videoDurationSeconds = await getVideoDurationSeconds(safeInputPath);
-    const estimatedClipDuration = PASS2_WORDS_MAX * PASS2_SECONDS_PER_WORD;
-    const safeGap = PASS2_SAFE_GAP_SECONDS;
-    const minStartSpacingSeconds = estimatedClipDuration + safeGap;
-    const maxSegments = Math.floor(videoDurationSeconds / (estimatedClipDuration + safeGap));
-
-    console.log(
-      `[job ${jobId}] Pass 2 timing inputs: videoDurationSeconds=${videoDurationSeconds}, estimatedClipDuration=${estimatedClipDuration}, safeGap=${safeGap}, minStartSpacingSeconds=${minStartSpacingSeconds}, maxSegments=${maxSegments}`
-    );
-
     const analysisResult = await analyseFrames(frames, {
       participantDescription,
       videoDurationSeconds,
-      maxSegments,
-      estimatedClipDuration,
-      safeGap,
-      minStartSpacingSeconds,
-      endBufferSeconds: PASS2_END_BUFFER_SECONDS
+      pipelineDebug: {
+        jobId,
+        workspaceDir: tempDir,
+        videoDurationSeconds
+      }
     });
 
     console.log(
       `[job ${jobId}] analyseFrames returned:`,
       JSON.stringify({
         hasUsage: Boolean(analysisResult?.usage),
-        segmentCount: analysisResult?.segments?.length ?? 0
+        segmentCount: analysisResult?.segments?.length ?? 0,
+        narrationWindows:
+          analysisResult?.narrationPlan?.narration_windows?.length ?? 0
       })
     );
 
-    const narrationSegments = analysisResult?.segments ?? [];
+    let voiceoverSectionsRaw = Array.isArray(analysisResult?.voiceoverSectionsRaw)
+      ? analysisResult.voiceoverSectionsRaw
+      : [];
+    if (voiceoverSectionsRaw.length === 0 && Array.isArray(analysisResult?.segments)) {
+      voiceoverSectionsRaw = analysisResult.segments.map((s) => ({
+        start: Number(s.timestamp),
+        end: Math.min(
+          videoDurationSeconds,
+          Number(s.timestamp) + Math.max(8, videoDurationSeconds / Math.max(analysisResult.segments.length, 1))
+        ),
+        text: String(s.text || "")
+      }));
+    }
+
+    const passFive = applyPassFiveNarrationValidation(
+      jobId,
+      videoDurationSeconds,
+      voiceoverSectionsRaw,
+      NARRATION_WORDS_PER_SECOND
+    );
+    const narrationSegments = passFive.sections.map((s) => ({
+      timestamp: Math.max(0, s.start),
+      text: s.text
+    }));
+
+    await writeJobPipelineDebugFile(
+      tempDir,
+      jobId,
+      videoDurationSeconds,
+      "pass5-validated-script.json",
+      "Pass 5 — pre-TTS validated script",
+      {
+        rawModelOutput: null,
+        parsedOutput: {
+          voiceoverSectionsFromPass4: voiceoverSectionsRaw
+        },
+        normalisedForNextStep: {
+          validatedSections: passFive.sections,
+          narrationSegmentsForTts: narrationSegments,
+          adjustmentsLog: passFive.adjustments,
+          wordsPerSecond: NARRATION_WORDS_PER_SECOND
+        }
+      }
+    );
+
     const passOneAnalysis = analysisResult?.passOneAnalysis ?? null;
+    const coachingInterpretation = analysisResult?.coachingInterpretation ?? null;
+    const narrationPlan = analysisResult?.narrationPlan ?? null;
 
     const passMeta =
       typeof job.metadata === "object" && job.metadata !== null ? { ...job.metadata } : {};
@@ -168,11 +441,17 @@ export async function processVideo(job) {
       pass1CostUsd: 0,
       pass2PromptTokens: 0,
       pass2CompletionTokens: 0,
-      pass2CostUsd: 0
+      pass2CostUsd: 0,
+      pass3PromptTokens: 0,
+      pass3CompletionTokens: 0,
+      pass3CostUsd: 0,
+      pass4PromptTokens: 0,
+      pass4CompletionTokens: 0,
+      pass4CostUsd: 0
     };
 
     console.log(
-      `[job ${jobId}] Pass 2 raw timestamps:`,
+      `[job ${jobId}] narration segment starts (post Pass5):`,
       narrationSegments.map((s) => ({ timestamp: s.timestamp, text: s.text?.slice(0, 40) }))
     );
 
@@ -216,8 +495,43 @@ export async function processVideo(job) {
       PASS3_GAP_SECONDS
     );
 
+    await writeJobPipelineDebugFile(
+      tempDir,
+      jobId,
+      videoDurationSeconds,
+      "final-audio-segments.json",
+      "Final audio segments (after Pass 6 timing placement, for stitch)",
+      {
+        rawModelOutput: null,
+        parsedOutput: {
+          afterTtsBeforePlacement: audioSegments.map((s) => ({
+            path: s.path,
+            timestamp: s.timestamp
+          }))
+        },
+        normalisedForNextStep: {
+          segmentsForStitch: validatedSegments.map((s) => ({
+            path: s.path,
+            timestamp: s.timestamp
+          })),
+          placementMeta: {
+            segmentsDropped: passThreeMeta.segmentsDropped,
+            segmentsPushed: passThreeMeta.segmentsPushed,
+            segmentDetails: passThreeMeta.segmentDetails,
+            gapSeconds: PASS3_GAP_SECONDS
+          }
+        }
+      }
+    );
+
+    let qaUsage = {
+      pass5PromptTokens: 0,
+      pass5CompletionTokens: 0,
+      pass5CostUsd: 0
+    };
+
     console.log(
-      `[job ${jobId}] Pass 3 complete — videoDurationSeconds=${videoDurationSeconds}, maxSegments=${maxSegments}, validatedSegmentCount=${validatedSegments.length}`
+      `[job ${jobId}] Pass 6 post-TTS placement — videoDurationSeconds=${videoDurationSeconds}, validatedClipCount=${validatedSegments.length}`
     );
 
     try {
@@ -225,15 +539,30 @@ export async function processVideo(job) {
         timestamp: s.finalTimestamp,
         duration: s.ttsDurationSeconds
       }));
-      const coverageMetrics = buildCoverageMetrics(videoDurationSeconds, passThreeSegmentDetails);
+      let coverageMetrics = buildCoverageMetrics(videoDurationSeconds, passThreeSegmentDetails);
+      coverageMetrics = augmentCoverageForNarrative(
+        coverageMetrics,
+        narrationPlan,
+        passFive.sections,
+        videoDurationSeconds
+      );
+
+      const finalVoiceoverForQa = passFive.sections.map((s) => ({
+        start: s.start,
+        end: s.end,
+        text: s.text
+      }));
 
       const qaResult = await scoreAnalysisQuality({
         videoDurationSeconds,
         passOneAnalysis,
-        passTwoSegments: narrationSegments,
+        coachingInterpretation,
+        narrationPlan,
+        passTwoSegments: finalVoiceoverForQa,
         passThreeValidatedDetails: passThreeMeta.segmentDetails,
         passThreeSegmentsDropped: passThreeMeta.segmentsDropped,
         passThreeSegmentsPushed: passThreeMeta.segmentsPushed,
+        passFiveAdjustments: passFive.adjustments,
         coverageMetrics
       });
       console.log(
@@ -247,6 +576,7 @@ export async function processVideo(job) {
         timing_accuracy: qaResult.timing_accuracy,
         speech_coverage: qaResult.speech_coverage,
         output_compliance: qaResult.output_compliance,
+        narrative_coherence: qaResult.narrative_coherence,
         main_issues: qaResult.main_issues,
         recommended_fix: qaResult.recommended_fix,
         coverage_metrics: coverageMetrics
@@ -256,8 +586,9 @@ export async function processVideo(job) {
       } else {
         console.log(`[job ${jobId}] quality_scores insert ok`);
       }
+      qaUsage = qaResult.usage ?? qaUsage;
     } catch (qaError) {
-      console.warn(`[job ${jobId}] Pass 4 QA scoring failed:`, qaError.message);
+      console.warn(`[job ${jobId}] Pass 7 QA scoring failed:`, qaError.message);
     }
 
     await updateJob(jobId, {
@@ -306,10 +637,22 @@ export async function processVideo(job) {
     }
 
     const { characterCount: ttsCharacters, costUsd: ttsCostUsd } = ttsUsage.getTotals();
-    const totalCostUsd = llmUsage.pass1CostUsd + llmUsage.pass2CostUsd + ttsCostUsd;
+    const totalCostUsd =
+      llmUsage.pass1CostUsd +
+      llmUsage.pass2CostUsd +
+      (llmUsage.pass3CostUsd ?? 0) +
+      (llmUsage.pass4CostUsd ?? 0) +
+      (qaUsage.pass5CostUsd ?? 0) +
+      ttsCostUsd;
     const voiceKeyForLog = normalizeVoiceKey(voiceKey);
 
-    // usage_logs: after FFmpeg output is uploaded and signed URL exists; before job marked complete (lines below).
+    if (totalCostUsd > PIPELINE_COST_BASELINE_USD * 1.4) {
+      console.warn(
+        `[job ${jobId}] COST ALERT: total pipeline ≈ $${totalCostUsd.toFixed(4)} USD vs historical baseline ~£0.31 (≈ $${PIPELINE_COST_BASELINE_USD} USD — rough FX; five LLM passes + TTS).`
+      );
+    }
+
+    // usage_logs: after FFmpeg output is uploaded and signed URL exists; before job marked complete.
     const { error: usageLogError } = await supabase.from("usage_logs").insert({
       job_id: jobId,
       pass1_prompt_tokens: llmUsage.pass1PromptTokens,
@@ -318,6 +661,15 @@ export async function processVideo(job) {
       pass2_prompt_tokens: llmUsage.pass2PromptTokens,
       pass2_completion_tokens: llmUsage.pass2CompletionTokens,
       pass2_cost_usd: llmUsage.pass2CostUsd,
+      pass3_prompt_tokens: llmUsage.pass3PromptTokens ?? 0,
+      pass3_completion_tokens: llmUsage.pass3CompletionTokens ?? 0,
+      pass3_cost_usd: llmUsage.pass3CostUsd ?? 0,
+      pass4_prompt_tokens: llmUsage.pass4PromptTokens ?? 0,
+      pass4_completion_tokens: llmUsage.pass4CompletionTokens ?? 0,
+      pass4_cost_usd: llmUsage.pass4CostUsd ?? 0,
+      pass5_prompt_tokens: qaUsage.pass5PromptTokens ?? 0,
+      pass5_completion_tokens: qaUsage.pass5CompletionTokens ?? 0,
+      pass5_cost_usd: qaUsage.pass5CostUsd ?? 0,
       tts_characters: ttsCharacters,
       tts_cost_usd: ttsCostUsd,
       total_cost_usd: totalCostUsd,
@@ -357,7 +709,15 @@ export async function processVideo(job) {
     });
     throw error;
   } finally {
-    await fs.rm(tempDir, { recursive: true, force: true });
+    console.log(`DEBUG FOLDER: ${getDebugRunsJobDirAbsolute(jobId)}`);
+    if (
+      process.env.PRESERVE_DEBUG_ARTIFACTS === "true" &&
+      (await pipelineDebugArtifactsPresent(tempDir))
+    ) {
+      console.log(`[job ${jobId}] debug workspace preserved: ${tempDir}`);
+    } else {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
   }
 }
 
@@ -569,7 +929,7 @@ async function stitchAudioOntoVideo(jobId, inputVideoPath, audioSegments, output
 
   console.log(`[job ${jobId}] FFmpeg stitch input video: ${inputVideoPath}`);
   console.log(
-    `[job ${jobId}] FFmpeg audio inputs (Pass 3 validated, count=${segments.length}):`,
+    `[job ${jobId}] FFmpeg audio inputs (Pass 6 post-TTS placement, count=${segments.length}):`,
     segments.map((s, i) => ({
       ffmpegInputIndex: i + 1,
       path: s.path,
@@ -659,12 +1019,12 @@ async function stitchAudioOntoVideo(jobId, inputVideoPath, audioSegments, output
 }
 
 /**
- * Pass 3: measure real MP3 durations, resolve overlaps by pushing starts forward.
+ * Post-TTS (Pass 6 in pipeline): measure real MP3 durations, resolve overlaps by pushing starts forward.
  * Only the **last accepted** clip defines the next min start — dropped clips never chain forward.
  * If adjusted start would fall at/after video end, or the clip extends past the end, drop (no placement beyond duration).
  */
 /**
- * Objective speech/silence metrics from Pass 3–validated segments ({ timestamp, duration } in seconds).
+ * Objective speech/silence metrics from post-TTS–validated segments ({ timestamp, duration } in seconds).
  */
 function buildCoverageMetrics(videoDurationSeconds, passThreeSegmentDetails) {
   const vd = Number(videoDurationSeconds);
@@ -713,13 +1073,13 @@ async function validatePassThreeTiming(jobId, audioSegments, videoDurationSecond
 
   if (!Number.isFinite(videoDurationSeconds) || videoDurationSeconds <= 0) {
     console.warn(
-      `[job ${jobId}] Pass 3: invalid videoDurationSeconds=${videoDurationSeconds} — refusing to schedule audio (would chain without a valid cap)`
+      `[job ${jobId}] Pass6 placement: invalid videoDurationSeconds=${videoDurationSeconds} — refusing to schedule audio (would chain without a valid cap)`
     );
     return { segments: [], passThreeMeta: emptyMeta };
   }
 
   console.log(
-    `[job ${jobId}] Pass 3: validatePassThreeTiming videoDurationSeconds=${videoDurationSeconds}s gap=${gapSeconds}s segmentsIn=${audioSegments.length}`
+    `[job ${jobId}] Pass6 placement: validatePassThreeTiming videoDurationSeconds=${videoDurationSeconds}s gap=${gapSeconds}s segmentsIn=${audioSegments.length}`
   );
 
   const sorted = [...audioSegments].sort((a, b) => a.timestamp - b.timestamp);
@@ -743,7 +1103,7 @@ async function validatePassThreeTiming(jobId, audioSegments, videoDurationSecond
       const minStart = prev.timestamp + prev.durationSec + gapSeconds;
       if (minStart > startTime) {
         console.warn(
-          `[job ${jobId}] Pass 3: pushed segment forward — originalStart=${row.originalTimestamp}s adjustedStart=${minStart}s (prev ends ${prev.timestamp + prev.durationSec}s + ${gapSeconds}s gap)`
+          `[job ${jobId}] Pass6 placement: pushed segment forward — originalStart=${row.originalTimestamp}s adjustedStart=${minStart}s (prev ends ${prev.timestamp + prev.durationSec}s + ${gapSeconds}s gap)`
         );
         startTime = minStart;
         segmentsPushed += 1;
@@ -752,7 +1112,7 @@ async function validatePassThreeTiming(jobId, audioSegments, videoDurationSecond
 
     if (startTime >= videoDurationSeconds) {
       console.warn(
-        `[job ${jobId}] Pass 3: dropped segment (adjusted start at/after video end) — originalStart=${row.originalTimestamp}s adjustedStart=${startTime}s videoDuration=${videoDurationSeconds}s`
+        `[job ${jobId}] Pass6 placement: dropped segment (adjusted start at/after video end) — originalStart=${row.originalTimestamp}s adjustedStart=${startTime}s videoDuration=${videoDurationSeconds}s`
       );
       segmentsDropped += 1;
       continue;
@@ -760,7 +1120,7 @@ async function validatePassThreeTiming(jobId, audioSegments, videoDurationSecond
 
     if (startTime + row.durationSec > videoDurationSeconds + 1e-3) {
       console.warn(
-        `[job ${jobId}] Pass 3: dropped segment (clip extends past video end) — originalStart=${row.originalTimestamp}s adjustedStart=${startTime}s duration=${row.durationSec}s videoDuration=${videoDurationSeconds}s`
+        `[job ${jobId}] Pass6 placement: dropped segment (clip extends past video end) — originalStart=${row.originalTimestamp}s adjustedStart=${startTime}s duration=${row.durationSec}s videoDuration=${videoDurationSeconds}s`
       );
       segmentsDropped += 1;
       continue;

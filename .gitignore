@@ -23,6 +23,9 @@ tmp-uploads/
 # Ad-hoc test media
 backend/tmp/
 
+# Pipeline debug export (local; see backend/lib/debugRunsExport.js)
+backend/debug-runs/
+
 # OS / editor
 .DS_Store
 *.log
