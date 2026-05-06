@@ -9,5 +9,8 @@
     "worker:dev": "npm run worker:dev --prefix backend",
     "start:backend": "npm start --prefix backend",
     "db:migrate:three-roll": "npm run migrate:three-roll --prefix backend"
+  },
+  "devDependencies": {
+    "supabase": "^2.98.2"
   }
 }
