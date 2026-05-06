@@ -1,0 +1,79 @@
+# ── VCS history (no need to index) ────────────────────────────────────────────
+.git/
+
+# ── Dependencies ────────────────────────────────────────────────────────────
+node_modules/
+**/node_modules/
+
+# ── Build outputs & bundler cache ─────────────────────────────────────────────
+dist/
+build/
+out/
+**/dist/
+**/build/
+**/out/
+.vite/
+.turbo/
+.cache/
+**/coverage/
+
+# ── Scratch, uploads, pipeline exports (large / bulky local data) ────────────
+tmp/
+temp/
+**/tmp/
+**/temp/
+**/tmp-*/
+**/tmp_uploads/
+tmp-uploads/
+**/tmp-uploads/
+backend/tmp/
+backend/tmp-uploads/
+backend/debug-runs/
+
+# ── Logs ──────────────────────────────────────────────────────────────────────
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ── Media (heavy; low value for code intelligence) ────────────────────────────
+*.mp4
+*.mov
+*.m4v
+*.webm
+*.mkv
+*.avi
+*.mp3
+*.aac
+*.wav
+*.flac
+*.m4a
+*.ogg
+
+# ── Archives & installers ────────────────────────────────────────────────────
+*.zip
+*.tar
+*.gz
+*.tgz
+*.rar
+*.7z
+*.dmg
+
+# ── Locks (large repetitive manifests; restores via npm install / npm ci) ───
+package-lock.json
+**/package-lock.json
+pnpm-lock.yaml
+**/pnpm-lock.yaml
+yarn.lock
+**/yarn.lock
+
+# ── Env & local secrets ──────────────────────────────────────────────────────
+.env
+.env.*
+**/.env
+**/.env.*
+
+# ── Misc generated / bulky artifacts ────────────────────────────────────────
+*.map
+*.tsbuildinfo
