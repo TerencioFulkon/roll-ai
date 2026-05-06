@@ -73,6 +73,34 @@ export async function getJobStatus(jobId) {
 }
 
 /**
+ * Same as GET /status/:id but returns status code (e.g. 404) without throwing —
+ * used to drop stale cached job ids after DB resets.
+ *
+ * @param {string} jobId
+ * @returns {Promise<
+ *   | { ok: true; status: number; data: Record<string, unknown> }
+ *   | { ok: false; status: number; error: string }
+ * >}
+ */
+export async function fetchJobStatusResult(jobId) {
+  const response = await fetch(`${API_URL}/status/${encodeURIComponent(jobId)}`, {
+    headers: { ...(await authHeaders()) }
+  });
+  /** @type {Record<string, unknown>} */
+  let data = {};
+  try {
+    data = await response.json();
+  } catch {
+    data = {};
+  }
+  if (!response.ok) {
+    const msg = typeof data.error === "string" && data.error.trim() ? data.error : "Unable to fetch status";
+    return { ok: false, status: response.status, error: msg };
+  }
+  return { ok: true, status: response.status, data };
+}
+
+/**
  * @param {string} sessionId
  * @returns {Promise<{ jobs: Array<{ job_id: string, status: string, created_at: string | null, completed_at: string | null }> }>}
  */

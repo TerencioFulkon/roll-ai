@@ -2,13 +2,21 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { ChevronLeft, Plus } from "lucide-react";
 import {
   fetchCompletedRolls,
+  fetchJobStatusResult,
   fetchSessionJobs,
   fetchSessionSummary,
   getJobStatus,
   patchSessionFunnel,
   uploadVideo
 } from "./api";
-import { rememberRollJobId, readStoredRollJobIds } from "./rollHistory";
+import {
+  clearAllRollHintStorage,
+  clearActiveJobIdIfMatches,
+  clearSessionActiveAnalysisIfMatches,
+  forgetRollJobId,
+  readStoredRollJobIds,
+  rememberRollJobId
+} from "./rollHistory";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
@@ -134,6 +142,40 @@ function collectAnonymousJobIdHints() {
 /** Max orphan lookups per rolls refresh — avoids noisy status polling. */
 const MAX_STORED_JOB_STATUS_LOOKUP = 48;
 
+function logRollsSourceSnapshot(backendJobsCount, renderedJobsCount) {
+  const localCachedJobsCount = collectAnonymousJobIdHints().length;
+  console.info("ROLLS SOURCE:", {
+    backend_jobs_count: backendJobsCount,
+    local_cached_jobs_count: localCachedJobsCount,
+    rendered_jobs_count: renderedJobsCount
+  });
+}
+
+/**
+ * Drop "failed" rows whose job no longer exists (e.g. dev DB reset) so we do not render Analysis failed cards.
+ *
+ * @param {Array<{ job_id: string, status: string, created_at: string | null, completed_at: string | null }>} jobRows
+ */
+async function pruneFailedJobsAbsentFromBackend(jobRows) {
+  /** @type {typeof jobRows} */
+  const out = [];
+  for (const j of jobRows) {
+    if (j.status !== "failed") {
+      out.push(j);
+      continue;
+    }
+    const r = await fetchJobStatusResult(j.job_id);
+    if (!r.ok && r.status === 404) {
+      forgetRollJobId(j.job_id);
+      clearActiveJobIdIfMatches(j.job_id);
+      clearSessionActiveAnalysisIfMatches(j.job_id);
+      continue;
+    }
+    out.push(j);
+  }
+  return out;
+}
+
 /**
  * Merge jobs remembered on-device into the session job list when the API list
  * omits them (e.g. upload without session_id linkage or storage/session drift on mobile).
@@ -150,35 +192,41 @@ async function augmentSessionJobsWithStoredRolls(serverList) {
 
   const rows = await Promise.all(
     orphans.map(async (id) => {
-      try {
-        const data = await getJobStatus(id);
-        const st = typeof data.status === "string" ? data.status : "pending";
-        if (st === "complete") {
-          rememberRollJobId(id);
+      const result = await fetchJobStatusResult(id);
+      if (!result.ok) {
+        const gone = result.status === 404 || /not\s+found/i.test(result.error || "");
+        if (gone) {
+          forgetRollJobId(id);
+          clearActiveJobIdIfMatches(id);
+          clearSessionActiveAnalysisIfMatches(id);
+          return null;
         }
-        const nowIso = new Date().toISOString();
-        return {
-          job_id: id,
-          status: st,
-          created_at: null,
-          completed_at: st === "complete" || st === "failed" ? nowIso : null
-        };
-      } catch {
-        const nowIso = new Date().toISOString();
-        return {
-          job_id: id,
-          status: "failed",
-          created_at: null,
-          completed_at: nowIso
-        };
+        console.warn("[rolls] orphan job status lookup failed; omitting card:", id, result.status, result.error);
+        return null;
       }
+      const data = result.data;
+      const st = typeof data.status === "string" ? data.status : "pending";
+      if (st === "complete") {
+        rememberRollJobId(id);
+      }
+      const nowIso = new Date().toISOString();
+      return {
+        job_id: id,
+        status: st,
+        created_at: null,
+        completed_at: st === "complete" || st === "failed" ? nowIso : null
+      };
     })
+  );
+
+  const validRows = rows.filter(
+    /** @returns {row is NonNullable<typeof row>} */ (row) => row != null
   );
 
   const seen = new Set();
   /** @type {typeof serverList} */
   const out = [];
-  for (const row of [...rows, ...serverList]) {
+  for (const row of [...validRows, ...serverList]) {
     if (seen.has(row.job_id)) continue;
     seen.add(row.job_id);
     out.push(row);
@@ -426,7 +474,19 @@ function App() {
       }
     }
 
+    if (
+      import.meta.env.DEV &&
+      sid &&
+      sessionFetchOk &&
+      serverList.length === 0 &&
+      list.length === 0 &&
+      !isAuthenticated
+    ) {
+      clearAllRollHintStorage();
+    }
+
     if (!isAuthenticated && !sid && list.length === 0 && collectAnonymousJobIdHints().length === 0) {
+      logRollsSourceSnapshot(serverList.length, 0);
       setSessionJobsList([]);
       setCompletedRolls([]);
       setFailedJobErrors({});
@@ -457,10 +517,27 @@ function App() {
           const tb = Date.parse(String(b.completed_at || b.created_at || 0)) || 0;
           return tb - ta;
         });
-        setSessionJobsList(mergedSessionJobs);
+        const prunedSessionJobs = await pruneFailedJobsAbsentFromBackend(mergedSessionJobs);
+        logRollsSourceSnapshot(serverList.length, prunedSessionJobs.length);
+
+        if (
+          storedForMerge.length > 0 &&
+          apiRolls.length === 0 &&
+          prunedSessionJobs.length === 0 &&
+          list.length === 0
+        ) {
+          for (const id of storedForMerge) {
+            forgetRollJobId(id);
+            clearActiveJobIdIfMatches(id);
+            clearSessionActiveAnalysisIfMatches(id);
+          }
+        }
+
+        setSessionJobsList(prunedSessionJobs);
+
         setCompletedRolls(finalizeRollListForUiDev(apiRolls));
 
-        const failedJobs = list.filter((j) => j.status === "failed");
+        const failedJobs = prunedSessionJobs.filter((j) => j.status === "failed");
         if (failedJobs.length > 0) {
           const errs = /** @type {Record<string, string>} */ ({});
           await Promise.all(
@@ -488,6 +565,9 @@ function App() {
         const completeIds = list.filter((j) => j.status === "complete").map((j) => j.job_id);
         const hintIds = collectAnonymousJobIdHints();
         const idSet = [...new Set([...completeIds, ...hintIds])];
+
+        /** @type {typeof list} */
+        let sessionJobsForUi = list;
 
         /** @type {typeof completedRolls} */
         let rollsFull = [];
@@ -518,14 +598,17 @@ function App() {
             const tb = Date.parse(String(b.completed_at || b.created_at || 0)) || 0;
             return tb - ta;
           });
-          setSessionJobsList(mergedSessionJobs);
+          sessionJobsForUi = await pruneFailedJobsAbsentFromBackend(mergedSessionJobs);
         } else {
-          setSessionJobsList(list);
+          sessionJobsForUi = await pruneFailedJobsAbsentFromBackend(list);
         }
+
+        logRollsSourceSnapshot(serverList.length, sessionJobsForUi.length);
+        setSessionJobsList(sessionJobsForUi);
 
         setCompletedRolls(finalizeRollListForUiDev(rollsFull));
 
-        const failedJobs = list.filter((j) => j.status === "failed");
+        const failedJobs = sessionJobsForUi.filter((j) => j.status === "failed");
         if (failedJobs.length > 0) {
           const errs = /** @type {Record<string, string>} */ ({});
           await Promise.all(
@@ -576,6 +659,24 @@ function App() {
       /* ignore */
     }
     return undefined;
+  }, [loadRollsPageData]);
+
+  /** DEV: clear orphaned local/session job hints after DB resets (`window.__rollai_clearRollHints()`). */
+  useEffect(() => {
+    if (!import.meta.env.DEV || typeof window === "undefined") {
+      return undefined;
+    }
+    window.__rollai_clearRollHints = () => {
+      clearAllRollHintStorage();
+      void loadRollsPageData();
+      console.info("[RollAI dev] Cleared roll hint storage and re-fetching Rolls.");
+    };
+    console.info(
+      "[RollAI dev] Console: __rollai_clearRollHints() — wipe local/session roll job caches and reload list."
+    );
+    return () => {
+      delete window.__rollai_clearRollHints;
+    };
   }, [loadRollsPageData]);
 
   const handleTabChange = (/** @type {"rolls" | "progress" | "gym"} */ nextTab) => {

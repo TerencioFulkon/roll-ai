@@ -56,7 +56,8 @@ create table if not exists public.usage_logs (
   tts_cost_usd numeric(10, 6) not null default 0,
   total_cost_usd numeric(10, 6) not null default 0,
   voice_key text,
-  video_duration_seconds numeric(8, 2)
+  video_duration_seconds numeric(8, 2),
+  provider text
 );
 
 create index if not exists usage_logs_job_id_idx on public.usage_logs (job_id);

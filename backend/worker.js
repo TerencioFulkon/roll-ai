@@ -1,5 +1,6 @@
-import { randomUUID } from "node:crypto";
 import "./env.js";
+import { randomUUID } from "node:crypto";
+import { logVisionProviderBootstrap } from "./lib/logVisionBootstrap.js";
 import { supabase } from "./supabase.js";
 import { processVideo } from "./jobs/processVideo.js";
 
@@ -79,6 +80,7 @@ async function poll() {
 }
 
 async function runWorkerLoop() {
+  logVisionProviderBootstrap(`worker-${WORKER_ID}`);
   console.log(`[worker ${WORKER_ID}] starting; polling every ${POLL_INTERVAL_MS}ms`);
   await poll();
   setInterval(poll, POLL_INTERVAL_MS);

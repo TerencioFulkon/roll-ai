@@ -1,3 +1,5 @@
+import { DATE_FORMAT_LOCALE, formatLocalDate } from "@/lib/dateTime";
+
 /** `m:ss` or `h:mm:ss` for roll duration labels (null → omit). */
 export function formatVideoDurationClock(seconds) {
   if (typeof seconds !== "number" || !Number.isFinite(seconds) || seconds <= 0) {
@@ -50,25 +52,22 @@ export function getRollDateSectionHeading(isoString) {
 
   const monthBucket = `${d.getFullYear()}-${d.getMonth()}`;
   try {
-    const label = new Intl.DateTimeFormat(undefined, { month: "long", year: "numeric" }).format(d);
+    const label = new Intl.DateTimeFormat(DATE_FORMAT_LOCALE, {
+      month: "long",
+      year: "numeric"
+    }).format(d);
     return { key: `month:${monthBucket}`, label };
   } catch {
     return { key: `month:${monthBucket}`, label: `${d.getFullYear()}` };
   }
 }
 
-/** Date-only label for roll lists (matches RollDetail). */
+/** Date-only label for roll lists (UTC from API → user’s local calendar date via `formatLocalDate`). */
 export function formatRollListDate(iso) {
   if (!iso || typeof iso !== "string") {
     return "";
   }
-  const d = new Date(iso.trim());
-  if (Number.isNaN(d.getTime())) {
-    return iso;
-  }
-  try {
-    return new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(d);
-  } catch {
-    return d.toLocaleDateString();
-  }
+  const trimmed = iso.trim();
+  const formatted = formatLocalDate(trimmed);
+  return formatted || trimmed;
 }

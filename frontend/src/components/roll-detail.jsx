@@ -1,3 +1,4 @@
+import { formatLocalDateTime, formatUtcIso } from "@/lib/dateTime";
 import { cn } from "@/lib/utils";
 import { ChevronLeft, Play } from "lucide-react";
 import { createPortal } from "react-dom";
@@ -45,17 +46,6 @@ function pickRollTimestampIso(roll) {
     }
   }
   return null;
-}
-
-/** @param {string} iso */
-function formatRollDateLabel(iso) {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return null;
-  try {
-    return new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(d);
-  } catch {
-    return d.toLocaleDateString();
-  }
 }
 
 /**
@@ -179,9 +169,8 @@ export function RollDetail({ roll, onBack, onSignUp, playbackSuspended = false, 
     }
   }, []);
 
-  /** `loadedmetadata` can miss rebroadcast after remount quirks / poll updates — widen gate opening */
-  const markVideoSurfaceMetaReady = useCallback((/** @type {HTMLVideoElement} */ el, wireMetaGate) => {
-    if (!wireMetaGate) return;
+  /** Open the video opacity gate once the element reports usable timeline metadata (duration). */
+  const markVideoSurfaceMetaReady = useCallback((/** @type {HTMLVideoElement} */ el) => {
     if (el.readyState < HTMLMediaElement.HAVE_METADATA) return;
     if (typeof el.duration !== "number" || !Number.isFinite(el.duration) || el.duration <= 0) return;
     setGates((g) => (g.meta ? g : { ...g, meta: true }));
@@ -364,7 +353,8 @@ export function RollDetail({ roll, onBack, onSignUp, playbackSuspended = false, 
     () => pickRollTimestampIso(roll),
     [roll.completed_at, roll.created_at]
   );
-  const rollDateLabel = rollTimestampIso ? formatRollDateLabel(rollTimestampIso) : null;
+  const rollDateTimeLocal = rollTimestampIso ? formatLocalDateTime(rollTimestampIso) : "";
+  const rollUtcLine = rollTimestampIso ? formatUtcIso(rollTimestampIso) : "";
 
   const playerSurfaceReady = gates.thumb && gates.meta;
   const showStackedPoster = Boolean(posterUrl) && !posterBroken;
@@ -377,8 +367,8 @@ export function RollDetail({ roll, onBack, onSignUp, playbackSuspended = false, 
   const soloVideoCn =
     "pointer-events-none absolute inset-0 z-[1] h-full w-full object-cover object-center";
 
-  /** @param {string} className @param {boolean} wireMetaGate */
-  function videoElement(className, wireMetaGate) {
+  /** @param {string} className */
+  function videoElement(className) {
     return (
       <video
         ref={videoRef}
@@ -390,21 +380,21 @@ export function RollDetail({ roll, onBack, onSignUp, playbackSuspended = false, 
         controls={false}
         onLoadedMetadata={(e) => {
           bumpDurationFromVideo(e.currentTarget);
-          markVideoSurfaceMetaReady(e.currentTarget, wireMetaGate);
+          markVideoSurfaceMetaReady(e.currentTarget);
         }}
         /** HLS / late duration fixes */
         onDurationChange={(e) => {
           bumpDurationFromVideo(e.currentTarget);
-          markVideoSurfaceMetaReady(e.currentTarget, wireMetaGate);
+          markVideoSurfaceMetaReady(e.currentTarget);
         }}
         /** iOS occasionally delays duration until buffered frames exist */
         onLoadedData={(e) => {
           bumpDurationFromVideo(e.currentTarget);
-          markVideoSurfaceMetaReady(e.currentTarget, wireMetaGate);
+          markVideoSurfaceMetaReady(e.currentTarget);
         }}
         onCanPlay={(e) => {
           bumpDurationFromVideo(e.currentTarget);
-          markVideoSurfaceMetaReady(e.currentTarget, wireMetaGate);
+          markVideoSurfaceMetaReady(e.currentTarget);
         }}
         onTimeUpdate={(e) => {
           if (seekDraggingRef.current) return;
@@ -415,7 +405,7 @@ export function RollDetail({ roll, onBack, onSignUp, playbackSuspended = false, 
         onPlay={(e) => {
           setPlaying(true);
           const v = e.currentTarget;
-          markVideoSurfaceMetaReady(v, wireMetaGate);
+          markVideoSurfaceMetaReady(v);
           queueMicrotask(() => {
             if (!videoRef.current || videoRef.current !== v || v.paused) return;
             const t = v.currentTime;
@@ -467,10 +457,10 @@ export function RollDetail({ roll, onBack, onSignUp, playbackSuspended = false, 
                 )}
                 aria-hidden
               />
-              {videoElement(stackedVideoCn, true)}
+              {videoElement(stackedVideoCn)}
             </>
           ) : (
-            videoElement(soloVideoCn, false)
+            videoElement(soloVideoCn)
           )}
         </div>
 
@@ -543,13 +533,21 @@ export function RollDetail({ roll, onBack, onSignUp, playbackSuspended = false, 
                 >
                   {roll.title}
                 </h1>
-                {rollDateLabel && rollTimestampIso ? (
-                  <time
-                    dateTime={rollTimestampIso}
-                    className="block max-w-[min(100%,32rem)] text-[13px] leading-snug tracking-tight text-white/72 tabular-nums drop-shadow-[0_1px_2px_rgb(0_0_0/0.75)]"
-                  >
-                    {rollDateLabel}
-                  </time>
+                {rollDateTimeLocal && rollTimestampIso ? (
+                  <div className="max-w-[min(100%,32rem)] space-y-0.5 text-[13px] leading-snug tracking-tight tabular-nums drop-shadow-[0_1px_2px_rgb(0_0_0/0.75)]">
+                    <time
+                      dateTime={rollTimestampIso}
+                      className="block text-white/72"
+                      title={`UTC: ${rollUtcLine}`}
+                    >
+                      {rollDateTimeLocal}
+                    </time>
+                    {rollUtcLine ? (
+                      <p className="text-[11px] leading-snug text-white/55" aria-label="UTC time">
+                        UTC: {rollUtcLine}
+                      </p>
+                    ) : null}
+                  </div>
                 ) : null}
               </div>
               {typeof onSignUp === "function" ? (

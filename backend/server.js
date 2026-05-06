@@ -3,6 +3,7 @@ import "./env.js";
 import cors from "cors";
 import express from "express";
 import { config } from "./config/index.js";
+import { logVisionProviderBootstrap } from "./lib/logVisionBootstrap.js";
 import { optionalAuth, requireAuth } from "./middleware/auth.js";
 import uploadRouter from "./routes/upload.js";
 import sessionsRouter from "./routes/sessions.js";
@@ -31,5 +32,6 @@ app.use("/api/voices", voicesRouter);
 app.use("/api/admin", requireAuth, adminRouter);
 
 app.listen(config.PORT, () => {
+  logVisionProviderBootstrap("api");
   console.log(`Backend listening on port ${config.PORT}`);
 });

@@ -114,6 +114,12 @@ router.post("/", (req, res) => {
             }
           }
 
+          const rawVisionProvider = (req.body?.vision_provider || "").trim().toLowerCase();
+          const visionProviderMeta =
+            rawVisionProvider === "gemini" || rawVisionProvider === "openai"
+              ? { vision_provider: rawVisionProvider }
+              : {};
+
           const insertPayload = {
             sqlid: jobId,
             status: "pending",
@@ -128,7 +134,8 @@ router.post("/", (req, res) => {
               participant_description: participantDescriptor,
               participant_descriptor: participantDescriptor,
               tts_voice_key: ttsVoiceKey,
-              ...(profilePhotoUrl && { profile_photo_url: profilePhotoUrl, profile_photo_mime_type: profilePhotoMimeType })
+              ...(profilePhotoUrl && { profile_photo_url: profilePhotoUrl, profile_photo_mime_type: profilePhotoMimeType }),
+              ...visionProviderMeta
             }
           };
 
